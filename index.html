@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>多機能クイズ早押し判定機</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      user-select: none;
+      -webkit-user-select: none;
+      touch-action: manipulation;
+    }
+    body {
+      margin: 0;
+      padding: 0;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      font-family: 'Helvetica Neue', Arial, sans-serif;
+      background-color: #1e1e24;
+      color: #fff;
+      overflow: hidden;
+    }
+
+    /* コントロールパネル（出題者用ヘッダー） */
+    header {
+      height: 70px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0 15px;
+      background-color: #2b2d42;
+      border-bottom: 2px solid #3d405b;
+      gap: 10px;
+    }
+    .control-group {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    label { font-size: 14px; font-weight: bold; }
+    select {
+      padding: 8px 12px;
+      font-size: 16px;
+      font-weight: bold;
+      border-radius: 5px;
+      border: none;
+      background: #8d99ae;
+      color: #edf2f4;
+      cursor: pointer;
+    }
+    
+    /* ボタンデザイン */
+    .btn {
+      padding: 10px 16px;
+      font-size: 15px;
+      font-weight: bold;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: transform 0.1s;
+    }
+    .btn:active { transform: scale(0.95); }
+    .btn-reset { background-color: #ffb703; color: #000; }
+    .btn-correct { background-color: #2ec4b6; color: #fff; }
+    .btn-wrong { background-color: #e63946; color: #fff; }
+
+    /* 早押しボタンの表示枠 */
+    #container {
+      flex: 1;
+      display: flex;
+      width: 100%;
+      height: calc(100vh - 70px);
+    }
+    .player-zone {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      align-items: center;
+      padding: 20px 10px;
+      border-right: 3px solid #1e1e24;
+      cursor: pointer;
+      position: relative;
+      transition: background-color 0.2s, opacity 0.2s;
+    }
+    .player-zone:last-child { border-right: none; }
+
+    /* プレイヤー情報テキスト */
+    .player-name { font-size: 24px; font-weight: bold; text-shadow: 1px 1px 3px rgba(0,0,0,0.5); }
+    .player-score { font-size: 28px; font-weight: 800; background: rgba(0,0,0,0.3); padding: 5px 15px; border-radius: 20px; }
+    .rank-badge {
+      font-size: 40px;
+      font-weight: 900;
+      text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+      margin-auto: auto;
+    }
+
+    /* 押されなかった・選択できない枠の強調減衰 */
+    .disabled { opacity: 0.25; filter: grayscale(50%); }
+    .active-winner { outline: 6px solid #fff; z-index: 5; }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="control-group">
+      <label for="player-count">人数:</label>
+      <select id="player-count" onchange="changePlayerCount()">
+        <option value="2">2名</option>
+        <option value="3">3名</option>
+        <option value="4" selected>4名</option>
+        <option value="5">5名</option>
+        <option value="6">6名</option>
+      </select>
+    </div>
+
+    <div class="control-group">
+      <button class="btn btn-correct" onclick="judge(true)">⭕ 正解 (+1pt)</button>
+      <button class="btn btn-wrong" onclick="judge(false)">❌ 不正解</button>
+      <button class="btn btn-reset" onclick="nextQuestion()">次へ (リセット)</button>
+    </div>
+  </header>
+
+  <div id="container"></div>
+
+  <script>
+    // 各プレイヤーごとに被らない背景色（最大6色）
+    const colors = [
+      '#e63946', // 赤
+      '#1d3557', // 紺
+      '#2a9d8f', // ターコイズ
+      '#f4a261', // オレンジ
+      '#9b5de5', // 紫
+      '#00f5d4'  // ミントグリーン
+    ];
+
+    let playerCount = 4;
+    let scores = {};
+    let pressOrder = []; // 押した順番を記録する配列
+    let audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+    // 初期化処理
+    function init() {
+      scores = {};
+      for (let i = 1; i <= 6; i++) scores[i] = 0;
+      buildZones();
+    }
+
+    // 人数に合わせて枠を画面上に自動構築
+    function buildZones() {
+      const container = document.getElementById('container');
+      container.innerHTML = '';
+      pressOrder = [];
+
+      for (let i = 1; i <= playerCount; i++) {
+        const zone = document.createElement('div');
+        zone.className = 'player-zone';
+        zone.id = `p${i}`;
+        zone.style.backgroundColor = colors[i - 1];
+
+        // 枠内の要素（名前・順位表示・点数）
+        zone.innerHTML = `
+          <div class="player-name">P${i}</div>
+          <div class="rank-badge" id="rank-p${i}"></div>
+          <div class="player-score" id="score-p${i}">${scores[i]} pt</div>
+        `;
+
+        // タッチ時のイベント（Multi-touch対応）
+        zone.addEventListener('pointerdown', (e) => {
+          e.preventDefault();
+          press(i);
+        });
+
+        container.appendChild(zone);
+      }
+    }
+
+    // 人数変更
+    function changePlayerCount() {
+      playerCount = parseInt(document.getElementById('player-count').value);
+      init();
+    }
+
+    // ボタンを押した時の判定ロジック
+    function press(playerNum) {
+      // 既に押したプレイヤーなら何もしない
+      if (pressOrder.includes(playerNum)) return;
+
+      pressOrder.push(playerNum);
+      const rank = pressOrder.length;
+
+      // 1番目（最速）だった時の演出と効果音
+      if (rank === 1) {
+        playSound(659.25, 523.25); // ピンポン音
+        document.getElementById(`p${playerNum}`).classList.add('active-winner');
+      }
+
+      // 順位バッジを表示
+      const rankBadge = document.getElementById(`rank-p${playerNum}`);
+      rankBadge.innerText = `${rank}位`;
+
+      // 1位以外の枠は少し暗くする
+      if (rank > 1) {
+        document.getElementById(`p${playerNum}`).classList.add('disabled');
+      }
+    }
+
+    // 正解 / 不正解の判定機能
+    function judge(isCorrect) {
+      if (pressOrder.length === 0) return; // 誰も押していなければスルー
+
+      const winnerId = pressOrder[0]; // 1番速く押した人
+
+      if (isCorrect) {
+        playSound(880, 1046.5); // 高いピンポン（正解音）
+        scores[winnerId] += 1;
+        document.getElementById(`score-p${winnerId}`).innerText = `${scores[winnerId]} pt`;
+      } else {
+        playBuzzer(); // ブッブー（不正解音）
+      }
+    }
+
+    // 次の問題に進む（ボタンの状態だけクリア）
+    function nextQuestion() {
+      pressOrder = [];
+      for (let i = 1; i <= playerCount; i++) {
+        const el = document.getElementById(`p${i}`);
+        el.classList.remove('disabled', 'active-winner');
+        document.getElementById(`rank-p${i}`).innerText = '';
+      }
+    }
+
+    // --- 効果音の自動生成プログラム ---
+    function playSound(f1, f2) {
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+      const osc1 = audioCtx.createOscillator();
+      const gain1 = audioCtx.createGain();
+      osc1.frequency.setValueAtTime(f1, audioCtx.currentTime);
+      gain1.gain.setValueAtTime(0.3, audioCtx.currentTime);
+      gain1.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.3);
+      osc1.connect(gain1); gain1.connect(audioCtx.destination);
+      osc1.start(); osc1.stop(audioCtx.currentTime + 0.3);
+
+      setTimeout(() => {
+        const osc2 = audioCtx.createOscillator();
+        const gain2 = audioCtx.createGain();
+        osc2.frequency.setValueAtTime(f2, audioCtx.currentTime);
+        gain2.gain.setValueAtTime(0.3, audioCtx.currentTime);
+        gain2.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.5);
+        osc2.connect(gain2); gain2.connect(audioCtx.destination);
+        osc2.start(); osc2.stop(audioCtx.currentTime + 0.5);
+      }, 120);
+    }
+
+    function playBuzzer() {
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(150, audioCtx.currentTime); // 低い不協和音
+      gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.5);
+      osc.connect(gain); gain.connect(audioCtx.destination);
+      osc.start(); osc.stop(audioCtx.currentTime + 0.5);
+    }
+
+    // 起動
+    init();
+  </script>
+</body>
+</html>
